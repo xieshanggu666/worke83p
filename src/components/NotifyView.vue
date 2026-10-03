@@ -37,6 +37,7 @@
             <span v-if="t.crisis_id">危机 <i>#{{ t.crisis_id }}</i></span>
             <span v-if="t.work_order_id">工单 <i>#{{ t.work_order_id }}</i></span>
             <span v-if="t.prop_path_id">传播路径 <i>#{{ t.prop_path_id }}</i></span>
+            <span v-if="t.ext_submission_id">外部协作 <i>#{{ t.ext_submission_id }}</i></span>
             <span>更新 <i>{{ t.updated }}</i></span>
           </div>
           <div v-if="t.last_error" class="t-err">⚠ {{ t.last_error }}</div>

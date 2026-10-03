@@ -1,5 +1,6 @@
 import { db } from './db.js'
 import { now, addTimeline } from './pipeline.js'
+import { deleteNotifyOfPath } from './notify.js'
 
 const q = (sql, ...p) => db.prepare(sql).all(...p)
 const q1 = (sql, ...p) => db.prepare(sql).get(...p)
@@ -440,14 +441,26 @@ export function markDecline(id, note, actor = { user: '系统' }) {
 export function deleteProp(id) {
   const p = q1('SELECT * FROM prop_paths WHERE id=?', id)
   if (!p) return null
-  run('DELETE FROM prop_edges WHERE path_id=?', id)
-  run('DELETE FROM prop_nodes WHERE path_id=?', id)
-  run('DELETE FROM prop_path_alerts WHERE path_id=?', id)
-  run('DELETE FROM prop_change_logs WHERE path_id=?', id)
-  // 路径来源工单保留（处置留痕），仅解除路径引用
-  run('UPDATE work_orders SET prop_path_id=NULL WHERE prop_path_id=?', id)
-  run('DELETE FROM prop_paths WHERE id=?', id)
-  return { ok: true, title: p.title }
+  // 路径沉淀与通知级联同事务：路径、节点/转发、留痕与路径来源通知任务（含升级链）要么全删要么回滚，
+  // 避免删除中断留下仍被调度器发送、却已无来源可追踪的幽灵通知任务
+  let notifyClean = { deleted: 0, detached: 0 }
+  db.exec('BEGIN')
+  try {
+    run('DELETE FROM prop_edges WHERE path_id=?', id)
+    run('DELETE FROM prop_nodes WHERE path_id=?', id)
+    run('DELETE FROM prop_path_alerts WHERE path_id=?', id)
+    run('DELETE FROM prop_change_logs WHERE path_id=?', id)
+    // 路径来源工单保留（处置留痕），仅解除路径引用
+    run('UPDATE work_orders SET prop_path_id=NULL WHERE prop_path_id=?', id)
+    // 路径来源通知任务（含回执超时升级子任务与留痕）随来源一并删除；挂工单的任务仅解除引用
+    notifyClean = deleteNotifyOfPath(id)
+    run('DELETE FROM prop_paths WHERE id=?', id)
+    db.exec('COMMIT')
+  } catch (e) {
+    try { db.exec('ROLLBACK') } catch { /* 已回滚 */ }
+    throw e
+  }
+  return { ok: true, title: p.title, notify: notifyClean }
 }
 
 export function reachFmt(n) {

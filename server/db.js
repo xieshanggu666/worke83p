@@ -673,6 +673,15 @@ function migrateDispatchLinks() {
     if (l.action === 'escalated' && String(l.detail).includes('二级')) updLogEv.run('escalate2', l.id)
     else if (logMap[l.action]) updLogEv.run(logMap[l.action], l.id)
   }
+
+  // ⑦ 回执升级任务来源继承回填：早期 escalateTask 未把传播路径/外部协作来源复制给升级子任务，
+  //    导致升级后来源丢失（危机删除级联、复盘统计、门户/路径追踪口径不一致）。仅回填仍为 NULL 的行，幂等。
+  const escSrcRows = db.prepare(`SELECT t.id, p.prop_path_id, p.ext_submission_id
+    FROM notify_tasks t JOIN notify_tasks p ON p.id=t.escalated_from
+    WHERE (t.prop_path_id IS NULL OR t.ext_submission_id IS NULL)
+      AND (p.prop_path_id IS NOT NULL OR p.ext_submission_id IS NOT NULL)`).all()
+  const updEscSrc = db.prepare('UPDATE notify_tasks SET prop_path_id=COALESCE(prop_path_id,?), ext_submission_id=COALESCE(ext_submission_id,?) WHERE id=?')
+  for (const r of escSrcRows) updEscSrc.run(r.prop_path_id, r.ext_submission_id, r.id)
 }
 migrateDispatchLinks()
 
@@ -720,7 +729,16 @@ function migrateOrphanNotifyTasks() {
   }
   // ④ 来源对象保留的任务：解除已删除危机的引用
   db.prepare('UPDATE notify_tasks SET crisis_id=NULL WHERE crisis_id IS NOT NULL AND crisis_id NOT IN (SELECT id FROM crisis)').run()
-  // ⑤ 兜底：无任务归属的留痕
+  // ⑤ 传播路径/外部提交来源孤儿：来源对象已删除（早期路径删除未级联通知任务），任务留存会成幽灵提醒。
+  //    口径与 notify.js deleteNotifyOfPath 一致——挂工单的任务（归属来源是保留的工单）仅解除引用，其余连同升级链删除。
+  //    须在升级链来源回填（migrateDispatchLinks⑦）之后执行：回填后升级子任务可凭继承到的来源一并识别。
+  sweep(`prop_path_id IS NOT NULL AND work_order_id IS NULL
+    AND prop_path_id NOT IN (SELECT id FROM prop_paths)`)
+  sweep(`ext_submission_id IS NOT NULL AND work_order_id IS NULL
+    AND ext_submission_id NOT IN (SELECT id FROM ext_submissions)`)
+  db.prepare('UPDATE notify_tasks SET prop_path_id=NULL WHERE prop_path_id IS NOT NULL AND prop_path_id NOT IN (SELECT id FROM prop_paths)').run()
+  db.prepare('UPDATE notify_tasks SET ext_submission_id=NULL WHERE ext_submission_id IS NOT NULL AND ext_submission_id NOT IN (SELECT id FROM ext_submissions)').run()
+  // ⑥ 兜底：无任务归属的留痕
   db.prepare('DELETE FROM notify_logs WHERE task_id NOT IN (SELECT id FROM notify_tasks)').run()
 }
 migrateOrphanNotifyTasks()

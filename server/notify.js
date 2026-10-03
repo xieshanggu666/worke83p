@@ -293,17 +293,19 @@ function escalateTask(t) {
     const chId = (sub && sub.escalate_channel_id) || t.channel_id
     const ch = q1('SELECT * FROM notify_channels WHERE id=?', chId)
     addLog(t.id, 'escalated', `回执超时未确认，通知升级至渠道「${ch ? ch.name : '已删除'}」`)
-    // 升级子任务继承来源链路：corr_id 与来源任务同根（无来源关联键时按任务 id 补），
-    // work_order_id 一并继承——工单通知的回执升级同样回到工单调度链路上可追踪
+    // 升级子任务继承完整来源链路：corr_id 与来源任务同根（无来源关联键时按任务 id 补），
+    // work_order_id 一并继承——工单通知的回执升级同样回到工单调度链路上可追踪；
+    // prop_path_id / ext_submission_id 同样继承——否则传播路径/外部协作来源在升级后丢失，
+    // 危机删除级联、复盘统计与门户/路径追踪将与原任务口径不一致。
     const childCorr = t.corr_id
       ? (/:(escalate|ackEsc)/.test(t.corr_id) ? t.corr_id : `${t.corr_id}:ackEsc`)
       : (t.work_order_id ? `wo${t.work_order_id}:ackEsc:${t.id}` : `task${t.id}:ackEsc`)
     const cr = run(`INSERT OR IGNORE INTO notify_tasks
-      (idem_key,sub_id,channel_id,alert_event_id,crisis_id,kind,title,content,status,attempts,max_attempts,next_retry_at,require_ack,escalated_from,work_order_id,wo_event,corr_id,seq,created,updated)
-      VALUES (?,?,?,?,?,?,?,?,'pending',0,?,NULL,?,?,?,?,?,?,?,?)`,
+      (idem_key,sub_id,channel_id,alert_event_id,crisis_id,kind,title,content,status,attempts,max_attempts,next_retry_at,require_ack,escalated_from,work_order_id,wo_event,prop_path_id,ext_submission_id,corr_id,seq,created,updated)
+      VALUES (?,?,?,?,?,?,?,?,'pending',0,?,NULL,?,?,?,?,?,?,?,?,?,?)`,
       `esc:${t.id}:ch${chId}`, t.sub_id, chId, t.alert_event_id, t.crisis_id, t.kind,
       `【升级】${t.title}`, t.content, Math.max(1, t.max_attempts), t.require_ack, t.id,
-      t.work_order_id, t.wo_event, childCorr, (t.seq || 0) + 1, ts, ts)
+      t.work_order_id, t.wo_event, t.prop_path_id, t.ext_submission_id, childCorr, (t.seq || 0) + 1, ts, ts)
     if (Number(cr.changes)) {
       const childId = Number(cr.lastInsertRowid)
       addLog(childId, 'created', `任务 #${t.id} 回执超时升级生成`)
@@ -482,6 +484,39 @@ export function deleteNotifyOfCrisis(crisisId) {
   }
   // 来源对象保留的任务：解除危机引用（与 alert_events/prop_paths/ext_submissions 的 detach 口径一致）
   const detached = Number(run('UPDATE notify_tasks SET crisis_id=NULL WHERE crisis_id=?', crisisId).changes || 0)
+  return { deleted, detached }
+}
+
+// ===== 传播路径删除级联（由 propagate.js 删除路径时同事务调用） =====
+// 路径事件类通知任务（含回执超时升级链上的子任务）的来源对象已删除：任务留存即成幽灵提醒，
+// 会被调度器继续发送并污染通知看板/复盘统计——来源任务与升级链一并物理删除（含留痕）。
+// 若历史异常数据中存在误挂 work_order_id 的路径任务，其归属来源是保留的工单：仅解除路径引用，不删除。
+// 返回 { deleted, detached }。
+export function deleteNotifyOfPath(pathId) {
+  const delIds = new Set()
+  // 正常数据中路径事件任务（kind='prop'）不挂工单、工单任务不挂路径；
+  // 以 work_order_id IS NULL 为准并兼容历史异常数据（误挂工单引用的路径任务仍随来源删除）。
+  for (const r of q('SELECT id FROM notify_tasks WHERE prop_path_id=? AND work_order_id IS NULL', pathId)) {
+    delIds.add(r.id)
+  }
+  // 升级链孤儿：被删任务的升级子任务一并删除（链深 1，循环兜底历史异常数据）
+  for (;;) {
+    const ids = [...delIds]
+    if (!ids.length) break
+    const ph = ids.map(() => '?').join(',')
+    const fresh = q(`SELECT id FROM notify_tasks WHERE escalated_from IN (${ph})`, ...ids).filter((r) => !delIds.has(r.id))
+    if (!fresh.length) break
+    for (const r of fresh) delIds.add(r.id)
+  }
+  let deleted = 0
+  if (delIds.size) {
+    const ids = [...delIds]
+    const ph = ids.map(() => '?').join(',')
+    run(`DELETE FROM notify_logs WHERE task_id IN (${ph})`, ...ids)
+    deleted = Number(run(`DELETE FROM notify_tasks WHERE id IN (${ph})`, ...ids).changes || 0)
+  }
+  // 归属工单的升级链任务等：来源工单保留，仅解除路径引用（与 work_orders.prop_path_id 的 detach 口径一致）
+  const detached = Number(run('UPDATE notify_tasks SET prop_path_id=NULL WHERE prop_path_id=?', pathId).changes || 0)
   return { deleted, detached }
 }
 
