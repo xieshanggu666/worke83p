@@ -703,6 +703,18 @@ backfillWorkOrderDispatchState()
 // 口径与 notify.js deleteNotifyOfCrisis 一致：来源对象已删除的任务（工单链路/危机状态类/升级链孤儿）连同留痕删除；
 // 来源对象保留的任务（预警/传播/外部协作类）仅解除危机引用。
 function migrateOrphanNotifyTasks() {
+  // 升级链来源继承回填：早期回执超时升级子任务未继承 prop_path_id/ext_submission_id，
+  // 导致传播/外部协作来源丢失（危机删除、复盘统计、门户追踪口径不一致）。按父任务幂等回填一层。
+  db.prepare(`UPDATE notify_tasks SET prop_path_id=(SELECT p.prop_path_id FROM notify_tasks p WHERE p.id=notify_tasks.escalated_from)
+    WHERE escalated_from IS NOT NULL AND prop_path_id IS NULL
+      AND EXISTS (SELECT 1 FROM notify_tasks p WHERE p.id=notify_tasks.escalated_from AND p.prop_path_id IS NOT NULL)`).run()
+  db.prepare(`UPDATE notify_tasks SET ext_submission_id=(SELECT p.ext_submission_id FROM notify_tasks p WHERE p.id=notify_tasks.escalated_from)
+    WHERE escalated_from IS NOT NULL AND ext_submission_id IS NULL
+      AND EXISTS (SELECT 1 FROM notify_tasks p WHERE p.id=notify_tasks.escalated_from AND p.ext_submission_id IS NOT NULL)`).run()
+  // 预警触发来源同样兜底（父任务挂 alert_event_id 而升级子任务未继承的历史数据）
+  db.prepare(`UPDATE notify_tasks SET alert_event_id=(SELECT p.alert_event_id FROM notify_tasks p WHERE p.id=notify_tasks.escalated_from)
+    WHERE escalated_from IS NOT NULL AND alert_event_id IS NULL
+      AND EXISTS (SELECT 1 FROM notify_tasks p WHERE p.id=notify_tasks.escalated_from AND p.alert_event_id IS NOT NULL)`).run()
   const sweep = (where) => {
     const ids = db.prepare(`SELECT id FROM notify_tasks WHERE ${where}`).all().map((r) => r.id)
     if (!ids.length) return 0
@@ -714,6 +726,10 @@ function migrateOrphanNotifyTasks() {
   sweep('work_order_id IS NOT NULL AND work_order_id NOT IN (SELECT id FROM work_orders)')
   // ② 危机状态类孤儿（危机已删除）
   sweep("kind='crisis' AND crisis_id IS NOT NULL AND crisis_id NOT IN (SELECT id FROM crisis)")
+  // ②b 来源悬空的传播任务（早期 deleteProp 未级联通知任务，遗留后仍会被调度发送）
+  sweep("kind='prop' AND prop_path_id IS NOT NULL AND prop_path_id NOT IN (SELECT id FROM prop_paths)")
+  // ②c 来源悬空的外部协作任务（外部提交被物理删除等异常历史数据）
+  sweep("kind='ext' AND ext_submission_id IS NOT NULL AND ext_submission_id NOT IN (SELECT id FROM ext_submissions)")
   // ③ 升级链孤儿（父任务已删除；链深 1，循环兜底历史异常数据）
   for (;;) {
     if (!sweep('escalated_from IS NOT NULL AND escalated_from NOT IN (SELECT id FROM notify_tasks)')) break

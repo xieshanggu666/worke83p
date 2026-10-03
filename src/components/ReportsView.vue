@@ -210,7 +210,7 @@
                 <div v-for="t in snap.notifications.items" :key="t.id" class="snap-item nt">
                   <span class="nt-dot" :class="t.status"></span>
                   <b>{{ t.title }}</b>
-                  <span>{{ t.channel_name }}（{{ t.channel_type }}）<template v-if="t.work_order_id"> · 📋 工单 #{{ t.work_order_id }}</template><template v-if="t.attempts>1"> · 尝试 {{ t.attempts }}/{{ t.max_attempts }}</template></span>
+                  <span>{{ t.channel_name }}（{{ t.channel_type }}）<template v-if="t.work_order_id"> · 📋 工单 #{{ t.work_order_id }}</template><template v-if="t.prop_path_id"> · 🕸 传播路径 #{{ t.prop_path_id }}</template><template v-if="t.ext_submission_id"> · 🤝 外部协作 #{{ t.ext_submission_id }}</template><template v-if="t.attempts>1"> · 尝试 {{ t.attempts }}/{{ t.max_attempts }}</template></span>
                   <i class="tag" :class="'st-'+t.status">{{ ntText(t.status) }}</i>
                   <span v-if="t.escalated_from" class="ack">⬆ 回执超时升级自 #{{ t.escalated_from }}</span>
                   <span v-if="t.ack_by" class="ack">回执：{{ t.ack_by }} · {{ t.ack_at }}<template v-if="t.ack_note">（{{ t.ack_note }}）</template></span>

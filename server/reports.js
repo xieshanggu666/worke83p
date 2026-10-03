@@ -114,7 +114,9 @@ export function buildSnapshot(crisisId) {
       channel_name: t.channel_name || '已删除渠道', channel_type: t.channel_type,
       require_ack: t.require_ack, ack_by: t.ack_by, ack_at: t.ack_at, ack_note: t.ack_note,
       escalated: t.escalated, escalated_from: t.escalated_from,
-      work_order_id: t.work_order_id, corr_id: t.corr_id, seq: t.seq,
+      work_order_id: t.work_order_id, prop_path_id: t.prop_path_id,
+      ext_submission_id: t.ext_submission_id, alert_event_id: t.alert_event_id,
+      corr_id: t.corr_id, seq: t.seq,
       attempts: t.attempts, max_attempts: t.max_attempts, last_error: t.last_error,
       sent_at: t.sent_at, created: t.created
     }))

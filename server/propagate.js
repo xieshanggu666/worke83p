@@ -20,7 +20,8 @@ const KOL_MIN_EDGE_HEAT = 60   // KOL 转发且热度达到爆发阈值才直接
 
 // 外部联动钩子（在 index.js 注入，避免模块循环依赖）
 // notify: 传播事件 → 通知编排（outbreak/surge/kol）；createWorkOrder: 爆发期跨角色工单
-let hooks = { notify: null, createWorkOrder: null }
+// deleteNotify: 路径删除时级联清理通知任务及其升级链（来源已删，任务不可留为幽灵提醒）
+let hooks = { notify: null, createWorkOrder: null, deleteNotify: null }
 export function bindPropHooks(h) { hooks = { ...hooks, ...h } }
 
 function addLog(pathId, action, detail, operator = '系统') {
@@ -440,6 +441,9 @@ export function markDecline(id, note, actor = { user: '系统' }) {
 export function deleteProp(id) {
   const p = q1('SELECT * FROM prop_paths WHERE id=?', id)
   if (!p) return null
+  // 通知任务以路径为来源对象：路径删除后来源任务与其回执升级链无追溯对象，级联清理（幂等）；
+  // 须在路径落库删除前调用，删除结果随返回值带出
+  const notifyDeleted = hooks.deleteNotify ? hooks.deleteNotify(id) : 0
   run('DELETE FROM prop_edges WHERE path_id=?', id)
   run('DELETE FROM prop_nodes WHERE path_id=?', id)
   run('DELETE FROM prop_path_alerts WHERE path_id=?', id)
@@ -447,7 +451,7 @@ export function deleteProp(id) {
   // 路径来源工单保留（处置留痕），仅解除路径引用
   run('UPDATE work_orders SET prop_path_id=NULL WHERE prop_path_id=?', id)
   run('DELETE FROM prop_paths WHERE id=?', id)
-  return { ok: true, title: p.title }
+  return { ok: true, title: p.title, notifyDeleted }
 }
 
 export function reachFmt(n) {

@@ -10,7 +10,8 @@ import {
   actorOf, permit, ROLE_TEXT, CHANNEL_TYPES, TASK_STATUS, CRISIS_STATUS_TEXT,
   listConfig, validateChannel, validateSub, listTasks, getTask,
   pauseTask, resumeTask, retryTask, cancelTask, ackTask, listLogs,
-  generateForCrisisStatus, seedNotifyTasks, startScheduler, deleteNotifyOfCrisis
+  generateForCrisisStatus, seedNotifyTasks, startScheduler, deleteNotifyOfCrisis, healNotifySourceLinks,
+  deleteNotifyOfPropPath
 } from './notify.js'
 import {
   SOURCE_TYPES, COLLECT_STATUS, listSources, listRuns, validateSource,
@@ -68,6 +69,11 @@ if (recovered) console.log(`[PUBMON] 恢复 ${recovered} 个中断的批量导�
 // 通知编排：为存量未解除预警补生成通知任务（幂等），并启动发送/重试/升级调度器
 const seededNotify = seedNotifyTasks()
 if (seededNotify) console.log(`[NOTIFY] 为存量未解除预警生成 ${seededNotify} 个通知任务`)
+// 升级链来源修复（幂等）：历史回执超时升级任务补齐传播路径/外部协作来源与正确危机归属，并清理孤儿任务
+const healedNotify = healNotifySourceLinks()
+if (healedNotify.healed || healedNotify.orphanDeleted) {
+  console.log(`[NOTIFY] 升级链来源修复：补齐 ${healedNotify.healed} 条任务来源，清理 ${healedNotify.orphanDeleted} 条孤儿任务`)
+}
 startScheduler()
 // 采集调度：运行中的采集任务随服务启动按游标自动接续（不丢不重）
 const resumedCollect = resumeCollectTasks()
@@ -84,7 +90,8 @@ startWorkOrderScheduler()
 // 传播路径分析：注入通知编排/工单/预警管线联动钩子，并为存量爆发期路径补生成通知（幂等）
 bindPropHooks({
   notify: (pathId, ev, extra) => generateForPropEvent(pathId, ev, extra),
-  createWorkOrder: (wo, actor) => createWorkOrder(wo, actor)
+  createWorkOrder: (wo, actor) => createWorkOrder(wo, actor),
+  deleteNotify: (pathId) => deleteNotifyOfPropPath(pathId)
 })
 bindPipelineProp({ onAlertEvent })
 const seededProp = seedPropNotifyTasks()
@@ -569,6 +576,9 @@ app.post('/api/crisis/:id/reopen', (req, res) => {
 app.delete('/api/crisis/:id', (req, res) => {
   const cid = +req.params.id
   let notifyClean = { deleted: 0, detached: 0 }
+  // 删除前先修复升级链来源（独立事务，幂等）：确保传播/外部协作升级子任务带着正确来源进入级联判定，
+  // 否则丢失来源的升级子任务会被误当孤儿删除或错误解除来源归属，造成追踪口径不一致。
+  healNotifySourceLinks()
   // 整条删除链路事务化：危机、时间线、结案档案、复盘报告、工单、声明与通知任务级联要么全部生效，要么整体回滚
   db.exec('BEGIN')
   try {
